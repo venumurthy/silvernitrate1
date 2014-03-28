@@ -91,7 +91,7 @@ class EC2Driver(driver.ComputeDriver):
             instance_id = instance_map[key]
             #Now deleting this instance in EC2 as well
             self.ec2_conn.stop_instances(instance_ids=[instance_id], force=True)
-            self.conn.terminate_instances(instance_ids=[instance.id])
+            self.ec2_conn.terminate_instances(instance_ids=[instance_id])
 
         else:
             LOG.warning(_("Key '%(key)s' not in instances '%(inst)s'") %
