@@ -1,28 +1,14 @@
-# Copyright 2010 United States Government as represented by the
-# Administrator of the National Aeronautics and Space Administration.
-# All Rights Reserved.
-# Copyright (c) 2010 Citrix Systems, Inc.
-#
-#    Licensed under the Apache License, Version 2.0 (the "License"); you may
-#    not use this file except in compliance with the License. You may obtain
-#    a copy of the License at
-#
-#         http://www.apache.org/licenses/LICENSE-2.0
-#
-#    Unless required by applicable law or agreed to in writing, software
-#    distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
-#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
-#    License for the specific language governing permissions and limitations
-#    under the License.
+# Copyright 2014
+__author__ = "Venu Murthy"
 
 """
-A fake (in-memory) hypervisor+api.
-
-Allows nova testing w/o a hypervisor.  This module also documents the
-semantics of real hypervisor connections.
+This is going to be able to do some magic on the AWS cloud.
+This is a config file associated with this called aws_config.py
 
 """
 
+from boto import ec2
+from aws_config import *
 import contextlib
 
 from oslo.config import cfg
@@ -43,33 +29,7 @@ CONF.import_opt('host', 'nova.netconf')
 LOG = logging.getLogger(__name__)
 
 
-_FAKE_NODES = None
-
-
-def set_nodes(nodes):
-    """Sets FakeDriver's node.list.
-
-    It has effect on the following methods:
-        get_available_nodes()
-        get_available_resource
-        get_host_stats()
-
-    To restore the change, call restore_nodes()
-    """
-    global _FAKE_NODES
-    _FAKE_NODES = nodes
-
-
-def restore_nodes():
-    """Resets FakeDriver's node list modified by set_nodes().
-
-    Usually called from tearDown().
-    """
-    global _FAKE_NODES
-    _FAKE_NODES = [CONF.host]
-
-
-class FakeInstance(object):
+class EC2Instance(object):
 
     def __init__(self, name, state):
         self.name = name
@@ -79,7 +39,7 @@ class FakeInstance(object):
         return getattr(self, key)
 
 
-class FakeDriver(driver.ComputeDriver):
+class EC2Driver(driver.ComputeDriver):
     capabilities = {
         "has_imagecache": True,
         "supports_recreate": True,
@@ -88,47 +48,57 @@ class FakeDriver(driver.ComputeDriver):
     """Fake hypervisor driver."""
 
     def __init__(self, virtapi, read_only=False):
-        super(FakeDriver, self).__init__(virtapi)
+        super(EC2Driver, self).__init__(virtapi)
+
         self.instances = {}
-        self.host_status_base = {
-          'vcpus': 100000,
-          'memory_mb': 8000000000,
-          'local_gb': 600000000000,
-          'vcpus_used': 0,
-          'memory_mb_used': 0,
-          'local_gb_used': 100000000000,
-          'hypervisor_type': 'fake',
-          'hypervisor_version': utils.convert_version_to_int('1.0'),
-          'hypervisor_hostname': CONF.host,
-          'cpu_info': {},
-          'disk_available_least': 500000000000,
-          'supported_instances': [(None, 'fake', None)],
-          }
+        self.host_status_base = {'vcpus': 100000, 'memory_mb': 8000000000, 'local_gb': 600000000000, 'vcpus_used': 0,
+                                 'memory_mb_used': 0, 'local_gb_used': 100000000000,
+                                 'hypervisor_type': 'EC2-Hypervisior',
+                                 'hypervisor_version': utils.convert_version_to_int('1.0'),
+                                 'hypervisor_hostname': CONF.host, 'cpu_info': {}, 'disk_available_least': 500000000000,
+                                 'supported_instances': [(None, 'ec2', None)], }
         self._mounts = {}
         self._interfaces = {}
-        if not _FAKE_NODES:
-            set_nodes([CONF.host])
+        self.reservation = self.conn.get_all_reservations()
 
-    def init_host(self, host):
-        return
+        #Initializing EC2 connection
 
-    def list_instances(self):
-        return self.instances.keys()
-
-    def plug_vifs(self, instance, network_info):
-        """Plug VIFs into networks."""
-        pass
-
-    def unplug_vifs(self, instance, network_info):
-        """Unplug VIFs from networks."""
-        pass
+        self.ec2_conn = ec2.connect_to_region(aws_region, aws_access_key_id=aws_access_key_id,
+                                              aws_secret_access_key=aws_secret_access_key)
 
     def spawn(self, context, instance, image_meta, injected_files,
               admin_password, network_info=None, block_device_info=None):
+        #Getting the name of the instance
         name = instance['name']
         state = power_state.RUNNING
-        fake_instance = FakeInstance(name, state)
+        fake_instance = EC2Instance(name, state)
+
         self.instances[name] = fake_instance
+
+        #EC2 instance creation activity here
+
+        reservation = self.ec2_conn.run_instances(aws_ami, instance_type=instance_type)
+        ec2_instance = reservation.instances
+        instance_map[name] = ec2_instance[0].id
+
+    def destroy(self, context, instance, network_info, block_device_info=None,
+                destroy_disks=True):
+        key = instance['name']
+
+        if key in self.instances:
+
+            del self.instances[key]
+            instance_id = instance_map[key]
+            #Now deleting this instance in EC2 as well
+            self.ec2_conn.stop_instances(instance_ids=[instance_id], force=True)
+            self.conn.terminate_instances(instance_ids=[instance.id])
+
+        else:
+            LOG.warning(_("Key '%(key)s' not in instances '%(inst)s'") %
+                        {'key': key,
+                         'inst': self.instances}, instance=instance)
+
+# done uptill here
 
     def snapshot(self, context, instance, name, update_task_state):
         if instance['name'] not in self.instances:
@@ -202,15 +172,6 @@ class FakeDriver(driver.ComputeDriver):
     def resume(self, context, instance, network_info, block_device_info=None):
         pass
 
-    def destroy(self, context, instance, network_info, block_device_info=None,
-                destroy_disks=True):
-        key = instance['name']
-        if key in self.instances:
-            del self.instances[key]
-        else:
-            LOG.warning(_("Key '%(key)s' not in instances '%(inst)s'") %
-                        {'key': key,
-                         'inst': self.instances}, instance=instance)
 
     def cleanup(self, context, instance, network_info, block_device_info=None,
                 destroy_disks=True):
@@ -253,16 +214,6 @@ class FakeDriver(driver.ComputeDriver):
             del self._interfaces[vif['id']]
         except KeyError:
             raise exception.InterfaceDetachFailed('not attached')
-
-    def get_info(self, instance):
-        if instance['name'] not in self.instances:
-            raise exception.InstanceNotFound(instance_id=instance['name'])
-        i = self.instances[instance['name']]
-        return {'state': i.state,
-                'max_mem': 0,
-                'mem': 0,
-                'num_cpu': 2,
-                'cpu_time': 0}
 
     def get_diagnostics(self, instance_name):
         return {'cpu0_time': 17300000000,
