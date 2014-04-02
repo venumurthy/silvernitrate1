@@ -29,6 +29,29 @@ CONF.import_opt('host', 'nova.netconf')
 LOG = logging.getLogger(__name__)
 
 
+def set_nodes(nodes):
+    """Sets FakeDriver's node.list.
+
+    It has effect on the following methods:
+        get_available_nodes()
+        get_available_resource
+        get_host_stats()
+
+    To restore the change, call restore_nodes()
+    """
+    global _FAKE_NODES
+    _FAKE_NODES = nodes
+
+
+def restore_nodes():
+    """Resets FakeDriver's node list modified by set_nodes().
+
+    Usually called from tearDown().
+    """
+    global _FAKE_NODES
+    _FAKE_NODES = [CONF.host]
+
+
 class EC2Instance(object):
 
     def __init__(self, name, state):
@@ -45,26 +68,28 @@ class EC2Driver(driver.ComputeDriver):
         "supports_recreate": True,
         }
 
-    """Fake hypervisor driver."""
+    """EC2 hypervisor driver."""
 
     def __init__(self, virtapi, read_only=False):
         super(EC2Driver, self).__init__(virtapi)
 
         self.instances = {}
-        self.host_status_base = {'vcpus': 100000, 'memory_mb': 8000000000, 'local_gb': 600000000000, 'vcpus_used': 0,
-                                 'memory_mb_used': 0, 'local_gb_used': 100000000000,
+        self.host_status_base = {'vcpus': 170000, 'memory_mb': 1700000000, 'local_gb': 170000000000, 'vcpus_used': 0,
+                                 'memory_mb_used': 0, 'local_gb_used': 170000000000,
                                  'hypervisor_type': 'EC2-Hypervisior',
                                  'hypervisor_version': utils.convert_version_to_int('1.0'),
-                                 'hypervisor_hostname': CONF.host, 'cpu_info': {}, 'disk_available_least': 500000000000,
+                                 'hypervisor_hostname': CONF.host, 'cpu_info': {}, 'disk_available_least': 170000000000,
                                  'supported_instances': [(None, 'ec2', None)], }
         self._mounts = {}
         self._interfaces = {}
-        self.reservation = self.conn.get_all_reservations()
 
         #Initializing EC2 connection
+        LOG.warning("Initializing connection with EC2")
 
         self.ec2_conn = ec2.connect_to_region(aws_region, aws_access_key_id=aws_access_key_id,
                                               aws_secret_access_key=aws_secret_access_key)
+        self.reservation = self.ec2_conn.get_all_reservations()
+        LOG.warning("Connected to EC2")
 
     def spawn(self, context, instance, image_meta, injected_files,
               admin_password, network_info=None, block_device_info=None):
@@ -76,7 +101,7 @@ class EC2Driver(driver.ComputeDriver):
         self.instances[name] = fake_instance
 
         #EC2 instance creation activity here
-
+        LOG.warning("Spawning an instance")
         reservation = self.ec2_conn.run_instances(aws_ami, instance_type=instance_type)
         ec2_instance = reservation.instances
         instance_map[name] = ec2_instance[0].id
@@ -136,8 +161,7 @@ class EC2Driver(driver.ComputeDriver):
     def migrate_disk_and_power_off(self, context, instance, dest,
                                    flavor, network_info,
                                    block_device_info=None):
-        pass
-
+        pa
     def finish_revert_migration(self, context, instance, network_info,
                                 block_device_info=None, power_on=True):
         pass
@@ -312,12 +336,12 @@ class EC2Driver(driver.ComputeDriver):
                'vcpus_used': 0,
                'memory_mb_used': 0,
                'local_gb_used': 0,
-               'hypervisor_type': 'fake',
+               'hypervisor_type': 'ec2',
                'hypervisor_version': '1.0',
                'hypervisor_hostname': nodename,
                'disk_available_least': 0,
                'cpu_info': '?',
-               'supported_instances': jsonutils.dumps([(None, 'fake', None)])
+               'supported_instances': jsonutils.dumps([(None, 'ec2', None)])
               }
         return dic
 
